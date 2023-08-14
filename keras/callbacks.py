@@ -25,9 +25,6 @@ import re
 import sys
 import time
 
-import numpy as np
-import tensorflow.compat.v2 as tf
-
 from keras import backend
 from keras.distribute import distributed_file_utils
 from keras.distribute import worker_training_state
@@ -40,6 +37,9 @@ from keras.utils import version_utils
 from keras.utils.data_utils import Sequence
 from keras.utils.generic_utils import Progbar
 from keras.utils.mode_keys import ModeKeys
+import numpy as np
+import tensorflow.compat.v2 as tf
+from keras.utils.timed_threads import TimedThread
 
 # isort: off
 from tensorflow.python.platform import tf_logging as logging
@@ -3306,3 +3306,67 @@ class LambdaCallback(Callback):
             self.on_train_begin = on_train_begin
         if on_train_end is not None:
             self.on_train_end = on_train_end
+
+
+@keras_export("keras.callbacks.UpdateEmbeddingCallback")
+class UpdateEmbeddingCallback(TimedThread, Callback):
+  """A callback to update the DynamicEmbedding layer at specific time interval.
+
+  Updating the embedding matrix  would mean that the optimizer variables will be
+  reset in this callback and this could have potential side effects. This means
+  that any existing slot variables associated with the optimizer will likely be
+  discarded when the optimizer is rebuilt. This affects optimizers that rely on
+  states of optimizer slot variables.
+  """
+
+  def __init__(self, dynamic_embedding_layer, interval):
+    """Initialize Timed Callback object.
+
+    Args:
+      dynamic_embedding_layer: The dynamic embedding
+        layer to be updated.
+      interval: the interval, in seconds, to wait between calls to the
+        thread function.
+    """
+    self._epoch = 0
+    tf.keras.utils.TimedThread.__init__(self, interval)
+    tf.keras.callbacks.Callback.__init__(self)
+    self._dynamic_embedding_layer = dynamic_embedding_layer
+    self.strategy = tf.distribute.get_strategy()
+
+  def on_interval(self):
+    try:
+      critical_section = tf.CriticalSection()
+
+      # Using `tf.CriticalSection` when updating embeddings using timed thread
+      # can help ensure thread safety and prevent race conditions in the shared
+      # variables.
+      def execute_critical_section():
+        critical_section.execute(
+            lambda: self._dynamic_embedding_layer.update_embeddings(  # pylint: disable=g-long-lambda
+                self.strategy
+            )
+        )
+      # update embeddings across all devices if distributed training is used
+      self.strategy.run(execute_critical_section)
+      # update optimizer variables across all devices if distributed training is
+      # used.
+      self.strategy.run(lambda: self._reset_optimizer())  # pylint: disable=unnecessary-lambda
+    except Exception as e:  # pylint: disable=broad-exception-caught
+      # Once training is complete, optimizer doesn't have iterations
+      logging.info("Exception raised in UpdateEmbeddingCallback %s", e)
+
+  def _reset_optimizer(self):
+    """Resetting the optimizer variables.
+
+    Resetting the optimizer variables is necessary after updating the variable
+    in the layer. This ensures that the optimizer is working with a consistent
+    internal state. This helps to prevent unexpected behavior and can lead to
+    more stable and faster training of the model.
+    """
+    for var in self.model.optimizer.variables():
+      if "dynamic_embedding" in var.name:
+        backend.set_value(var, backend.zeros_like(var))
+
+  def on_epoch_begin(self, epoch, logs=None):
+    self._epoch = epoch
