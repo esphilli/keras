@@ -12,9 +12,7 @@ from tensorflow.python.util.tf_export import keras_export
 BASE_WEIGHTS_PATH = (
     "https://storage.googleapis.com/tensorflow/keras-applications/densenet/"
 )
-DENSENET121_WEIGHT_PATH = (
-    BASE_WEIGHTS_PATH + "densenet121_weights_tf_dim_ordering_tf_kernels.h5"
-)
+
 DENSENET121_WEIGHT_PATH_NO_TOP = (
     BASE_WEIGHTS_PATH
     + "densenet121_weights_tf_dim_ordering_tf_kernels_notop.h5"
@@ -47,8 +45,8 @@ def transition_block(x, reduction, name):
       output tensor for the block.
     """
     bn_axis = 3 if backend.image_data_format() == "channels_last" else 1
-    x = layers.BatchNormalization(
-        axis=bn_axis, epsilon=1.001e-5, name=name + "_bn"
+    x = layers.GroupNormalization(
+        groups=2, axis=bn_axis, epsilon=1.001e-5, name=name + "_gn"
     )(x)
     x = layers.Activation("relu", name=name + "_relu")(x)
     x = layers.Conv3D(
@@ -71,15 +69,15 @@ def conv_block(x, growth_rate, name):
       Output tensor for the block.
     """
     bn_axis = 4 if backend.image_data_format() == "channels_last" else 1
-    x1 = layers.BatchNormalization(
-        axis=bn_axis, epsilon=1.001e-5, name=name + "_0_bn"
+    x1 = layers.GroupNormalization(
+        groups=2, axis=bn_axis, epsilon=1.001e-5, name=name + "_0_gn"
     )(x)
     x1 = layers.Activation("relu", name=name + "_0_relu")(x1)
     x1 = layers.Conv3D(
         4 * growth_rate, 1, use_bias=False, name=name + "_1_conv"
     )(x1)
-    x1 = layers.BatchNormalization(
-        axis=bn_axis, epsilon=1.001e-5, name=name + "_1_bn"
+    x1 = layers.GroupNormalization(
+        groups=2, axis=bn_axis, epsilon=1.001e-5, name=name + "_1_bn"
     )(x1)
     x1 = layers.Activation("relu", name=name + "_1_relu")(x1)
     x1 = layers.Conv3D(
@@ -108,21 +106,15 @@ def DenseNet(
             "or the path to the weights file to be loaded."
         )
 
-    if weights == "imagenet" and include_top and classes != 1000:
-        raise ValueError(
-            'If using `weights` as `"imagenet"` with `include_top`'
-            " as true, `classes` should be 1000"
-        )
-
     # Determine proper input shape
-    input_shape = imagenet_utils.obtain_input_shape(
-        input_shape,
-        default_size=224,
-        min_size=32,
-        data_format=backend.image_data_format(),
-        require_flatten=include_top,
-        weights=weights,
-    )
+    #input_shape = imagenet_utils.obtain_input_shape(
+    #    input_shape,
+    #    default_size=224,
+    #    min_size=32,
+    #    data_format=backend.image_data_format(),
+    #    require_flatten=include_top,
+    #    weights=weights,
+    #)
 
     if input_tensor is None:
         img_input = layers.Input(shape=input_shape)
@@ -136,8 +128,8 @@ def DenseNet(
 
     x = layers.ZeroPadding3D(padding=(3, 3, 3))(img_input)
     x = layers.Conv3D(64, 7, strides=2, use_bias=False, name="conv1/conv")(x)
-    x = layers.BatchNormalization(
-        axis=bn_axis, epsilon=1.001e-5, name="conv1/bn"
+    x = layers.GroupNormalization(
+        groups=2, axis=bn_axis, epsilon=1.001e-5, name="conv1/gn"
     )(x)
     x = layers.Activation("relu", name="conv1/relu")(x)
     x = layers.ZeroPadding3D(padding=(1, 1, 1))(x)
@@ -151,21 +143,13 @@ def DenseNet(
     x = transition_block(x, 0.5, name="pool4")
     x = dense_block(x, blocks[3], name="conv5")
 
-    x = layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name="bn")(x)
+    x = layers.GroupNormalization(groups=2, axis=bn_axis, epsilon=1.001e-5, name="gn")(x)
     x = layers.Activation("relu", name="relu")(x)
 
-    if include_top:
+    if pooling == "avg":
         x = layers.GlobalAveragePooling3D(name="avg_pool")(x)
-
-        imagenet_utils.validate_activation(classifier_activation, weights)
-        x = layers.Dense(
-            classes, activation=classifier_activation, name="predictions"
-        )(x)
-    else:
-        if pooling == "avg":
-            x = layers.GlobalAveragePooling3D(name="avg_pool")(x)
-        elif pooling == "max":
-            x = layers.GlobalMaxPooling3D(name="max_pool")(x)
+    elif pooling == "max":
+        x = layers.GlobalMaxPooling3D(name="max_pool")(x)
 
     # Ensure that the model takes into account
     # any potential predecessors of `input_tensor`.
@@ -248,4 +232,4 @@ preprocess_input.__doc__ = imagenet_utils.PREPROCESS_INPUT_DOC.format(
 )
 decode_predictions.__doc__ = imagenet_utils.decode_predictions.__doc__
 
-setattr(DenseNet121, "__doc__", DenseNet121.__doc__ + DOC)
+#setattr(DenseNet121, "__doc__", DenseNet121.__doc__ + DOC)
